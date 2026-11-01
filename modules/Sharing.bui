@@ -1,0 +1,222 @@
+Public Function SharingSupported() As Boolean
+    #If TargetMac Then
+        Dim cls As Ptr = ObjClass("NSSharingServicePicker")
+        Return ClassResponds(cls, NativeSelector("close")) <> 0
+    #Else
+        Return False
+    #End If
+End Function
+
+#If TargetMac Then
+    Sequential Structure SharingRectangle
+        X As Double
+        Y As Double
+        Width As Double
+        Height As Double
+    End Structure
+    Private Declare Function ObjClass Lib "objc" Alias "objc_getClass" (name As String) As Ptr
+    Private Declare Function NativeSelector Lib "objc" Alias "sel_registerName" (name As String) As Ptr
+    Private Declare Function ClassResponds Lib "Foundation" Selector "instancesRespondToSelector:" (cls As Ptr, selectorValue As Ptr) As UInt8
+    Private Declare Sub ClosePicker Lib "AppKit" Selector "close" (picker As Ptr)
+    Private Declare Function Allocate Lib "Foundation" Selector "alloc" (cls As Ptr) As Ptr
+    Private Declare Function NewArray Lib "Foundation" Selector "new" (cls As Ptr) As Ptr
+    Private Declare Sub AddObject Lib "Foundation" Selector "addObject:" (items As Ptr, value As Ptr)
+    Private Declare Function InitFile Lib "Foundation" Selector "initFileURLWithPath:" (url As Ptr, text As Ptr) As Ptr
+    Private Declare Function InitURL Lib "Foundation" Selector "initWithString:" (url As Ptr, text As Ptr) As Ptr
+    Private Declare Function URLScheme Lib "Foundation" Selector "scheme" (url As Ptr) As Ptr
+    Private Declare Function URLUser Lib "Foundation" Selector "user" (url As Ptr) As Ptr
+    Private Declare Function URLPassword Lib "Foundation" Selector "password" (url As Ptr) As Ptr
+    Private Declare Function URLHost Lib "Foundation" Selector "host" (url As Ptr) As Ptr
+    Private Declare Function InitPicker Lib "AppKit" Selector "initWithItems:" (picker As Ptr, items As Ptr) As Ptr
+    Private Declare Sub ShowNative Lib "AppKit" Selector "showRelativeToRect:ofView:preferredEdge:" (picker As Ptr, rectangle As SharingRectangle, view As Ptr, edge As Integer)
+    Private Declare Function NativeWindow Lib "AppKit" Selector "window" (view As Ptr) As Ptr
+    Private Declare Function WindowVisible Lib "AppKit" Selector "isVisible" (window As Ptr) As UInt8
+    Private Declare Sub ReleaseObject Lib "CoreFoundation" Alias "CFRelease" (value As Ptr)
+#End If
+
+#If TargetMac Then
+    Private Declare Function CleanupIsMain Lib "Foundation" Selector "isMainThread" (cls As Ptr) As UInt8
+    Private Sub RequireMain()
+        If CleanupIsMain(ObjClass("NSThread")) = 0 Then Throw New InvalidArgumentException("Sharing controls require the main thread")
+    End Sub
+    Private Class SharingTeardown
+        Public Property Picker As Ptr = Nil
+        Public Property Items As Ptr = Nil
+        Public Property Anchor As UIControl = Nil
+    End Class
+    Private Class SharingCleanup
+        Public Shared Property Guard As Mutex = New Mutex()
+        Public Shared Property Pending As Array Of SharingTeardown = []
+    End Class
+    Private Sub DisposeSharing(item As SharingTeardown)
+        If item.Picker <> Nil Then
+            ClosePicker(item.Picker)
+            ReleaseObject(item.Picker)
+        End If
+        If item.Items <> Nil Then ReleaseObject(item.Items)
+        item.Anchor = Nil
+    End Sub
+    Private Sub DrainSharingTeardown()
+        Dim pending As Array Of SharingTeardown = []
+        SyncLock SharingCleanup.Guard
+            pending = SharingCleanup.Pending
+            SharingCleanup.Pending = []
+        End SyncLock
+        For Each item As SharingTeardown In pending
+            DisposeSharing(item)
+        Next
+    End Sub
+    Private Sub RetireSharing(item As SharingTeardown)
+        If CleanupIsMain(ObjClass("NSThread")) <> 0 Then
+            DisposeSharing(item)
+        Else
+            SyncLock SharingCleanup.Guard
+                Array.Append(SharingCleanup.Pending, item)
+            End SyncLock
+            MainThread.InvokeAsync(AddressOf DrainSharingTeardown)
+        End If
+    End Sub
+#End If
+
+''' Retain this object in the owning window while the native picker/service is in use.
+Public Class SharingPicker
+    Private Property mItems As Ptr = Nil
+    Private Property mPicker As Ptr = Nil
+    Private Property mAnchor As UIControl = Nil
+    Private Property mCount As Integer = 0
+    Private Property mClosed As Boolean = False
+    Public Property Count As Integer
+        Get
+            Return Me.mCount
+        End Get
+    End Property
+
+    Public Sub Constructor()
+        #If TargetMac Then
+            RequireMain()
+            If Not SharingSupported() Then Throw New Exception("Sharing picker lifecycle requires macOS 13 or newer")
+            Me.mItems = NewArray(ObjClass("NSMutableArray"))
+        #Else
+            Throw New Exception("Sharing picker requires macOS")
+        #End If
+    End Sub
+
+    Private Sub RequireEditable()
+        #If TargetMac Then
+            RequireMain()
+        #End If
+        If Me.mClosed Then Throw New InvalidArgumentException("Sharing picker is closed")
+        If Me.mPicker <> Nil Then Throw New InvalidArgumentException("Create a new picker to change an already presented payload")
+    End Sub
+
+    Public Sub AddText(value As String)
+        Me.RequireEditable()
+        If value = "" Then Throw New InvalidArgumentException("Sharing text is empty")
+        #If TargetMac Then
+            Dim text As CFStringRef = CType(value, CFStringRef)
+            Try
+                AddObject(Me.mItems, text)
+                Me.mCount += 1
+            Finally
+                ReleaseObject(text)
+            End Try
+        #End If
+    End Sub
+
+    Public Sub AddFile(file As FileSystemItem)
+        Me.RequireEditable()
+        If file = Nil Then Throw New InvalidArgumentException("A file is required")
+        For Each pathCharacter As String In String.Chars(file.NativePath)
+            If String.Asc(pathCharacter) = 0 Then Throw New InvalidArgumentException("File path contains NUL")
+        Next
+        If Not file.Exists() Then Throw New InvalidArgumentException("Sharing file does not exist")
+        #If TargetMac Then
+            Dim text As CFStringRef = CType(file.NativePath, CFStringRef)
+            Dim url As Ptr = Nil
+            Try
+                url = InitFile(Allocate(ObjClass("NSURL")), text)
+                AddObject(Me.mItems, url)
+                Me.mCount += 1
+            Finally
+                If url <> Nil Then ReleaseObject(url)
+                ReleaseObject(text)
+            End Try
+        #End If
+    End Sub
+
+    Public Sub AddWebURL(value As String)
+        Me.RequireEditable()
+        For Each character As String In String.Chars(value)
+            Dim code As Integer = String.Asc(character)
+            If code < 32 Or code = 127 Then Throw New InvalidArgumentException("Sharing URL contains control characters")
+        Next
+        #If TargetMac Then
+            Dim text As CFStringRef = CType(String.Trim(value), CFStringRef)
+            Dim url As Ptr = Nil
+            Try
+                url = InitURL(Allocate(ObjClass("NSURL")), text)
+                If url = Nil Then Throw New InvalidArgumentException("Invalid sharing URL")
+                If URLScheme(url) = Nil Then Throw New InvalidArgumentException("Sharing URL needs a scheme")
+                If URLUser(url) <> Nil Or URLPassword(url) <> Nil Then Throw New InvalidArgumentException("Sharing URLs must not include credentials")
+                Dim scheme As String = String.LCase(CType(CType(URLScheme(url), CFStringRef), String))
+                If scheme <> "https" And scheme <> "http" Then Throw New InvalidArgumentException("Only HTTP(S) sharing URLs are accepted")
+                If URLHost(url) = Nil Then Throw New InvalidArgumentException("Sharing URL needs a host")
+                If CType(CType(URLHost(url), CFStringRef), String) = "" Then Throw New InvalidArgumentException("Sharing URL needs a host")
+                AddObject(Me.mItems, url)
+                Me.mCount += 1
+            Finally
+                If url <> Nil Then ReleaseObject(url)
+                ReleaseObject(text)
+            End Try
+        #Else
+            Throw New Exception("Sharing picker requires macOS")
+        #End If
+    End Sub
+
+    ''' Only presents choices; never chooses a destination or claims delivery completion.
+    Public Sub Show(anchor As UIControl, x As Double = 0.0, y As Double = 0.0, width As Double = 1.0, height As Double = 1.0)
+        If Me.mClosed Then Throw New InvalidArgumentException("Sharing picker is closed")
+        #If TargetMac Then
+            RequireMain()
+        #End If
+        If Me.mCount = 0 Then Throw New InvalidArgumentException("Sharing needs at least one item")
+        If anchor = Nil Then Throw New InvalidArgumentException("A visible anchor control is required")
+        If Not anchor.Visible Then Throw New InvalidArgumentException("Sharing anchor is hidden")
+        For Each coordinate As Double In [x, y, width, height]
+            If coordinate <> coordinate Or coordinate > 16777216.0 Or coordinate < -16777216.0 Then Throw New InvalidArgumentException("Sharing anchor rectangle must be finite and in range")
+        Next
+        If width <= 0.0 Or height <= 0.0 Then Throw New InvalidArgumentException("Anchor rectangle needs positive dimensions")
+        #If TargetMac Then
+            Dim window As Ptr = NativeWindow(anchor.NativeWidget)
+            If window = Nil Then Throw New InvalidArgumentException("Sharing anchor must belong to a window")
+            If WindowVisible(window) = 0 Then Throw New InvalidArgumentException("Sharing anchor window is not visible")
+            If Me.mPicker = Nil Then Me.mPicker = InitPicker(Allocate(ObjClass("NSSharingServicePicker")), Me.mItems)
+            If Me.mPicker = Nil Then Throw New Exception("Sharing picker could not be created")
+            Me.mAnchor = anchor
+            Dim rectangle As SharingRectangle = { X: x, Y: y, Width: width, Height: height }
+            ShowNative(Me.mPicker, rectangle, anchor.NativeWidget, 1)
+        #End If
+    End Sub
+
+    ''' Dismiss the picker and release its payload. Delivery completion is not reported.
+    Public Sub Close()
+        If Me.mClosed Then Return
+        Me.mClosed = True
+        #If TargetMac Then
+            Dim pending As New SharingTeardown()
+            pending.Picker = Me.mPicker
+            pending.Items = Me.mItems
+            pending.Anchor = Me.mAnchor
+            Me.mPicker = Nil
+            Me.mItems = Nil
+            Me.mAnchor = Nil
+            RetireSharing(pending)
+        #End If
+        Me.mPicker = Nil
+        Me.mItems = Nil
+        Me.mAnchor = Nil
+    End Sub
+    Public Sub Destructor()
+        Me.Close()
+    End Sub
+End Class

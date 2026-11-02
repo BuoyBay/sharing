@@ -1,4 +1,4 @@
-# macOS Sharing picker from a typed payload
+# macOS share sheet
 
 Build a typed payload and let the user choose a macOS sharing service.
 `Import sharing`. Requires **macOS 13+**, which provides the native picker's

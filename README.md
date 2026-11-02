@@ -1,4 +1,4 @@
-# Present native macOS sharing services from a typed payload
+# macOS Sharing picker from a typed payload
 
 Build a typed payload and let the user choose a macOS sharing service.
 `Import sharing`. Requires **macOS 13+**, which provides the native picker's
@@ -26,7 +26,7 @@ consumer project for reproducible installs.
 
 ## Example
 
-```buoy
+```basic
 Import sharing
 
 Function CreateTextShare(text As String) As SharingPicker

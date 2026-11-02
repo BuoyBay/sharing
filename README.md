@@ -1,4 +1,4 @@
-# Present native macOS sharing services
+# Present native macOS sharing services from a typed payload
 
 Build a typed payload and let the user choose a macOS sharing service.
 `Import sharing`. Requires **macOS 13+**, which provides the native picker's
@@ -65,8 +65,6 @@ On your own machine, install Buoy and run:
 ```sh
 buoy ai init --both
 ```
-
-The generated agent files and editor settings stay local and are ignored by Git.
 
 ## Contributing
 
